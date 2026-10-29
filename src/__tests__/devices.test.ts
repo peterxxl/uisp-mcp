@@ -87,7 +87,7 @@ describe('handleDeviceTool', () => {
   });
 
   it('surfaces a 429 as a readable rate-limit error rather than throwing', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'rate limited' }, 429));
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({ error: 'rate limited' }, 429)));
 
     const result = await runWithCredentials(creds, () => handleDeviceTool('uisp_list_devices', {}));
 

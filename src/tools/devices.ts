@@ -9,6 +9,7 @@ import {
   listDevices,
   listDiscoveredDevices,
 } from '../client.js';
+import { parseToolArgs } from './args.js';
 import type { CallToolResult } from './types.js';
 import { errorResult, requireCredentials, textResult } from './shared.js';
 
@@ -122,6 +123,7 @@ export async function handleDeviceTool(name: string, args: Record<string, unknow
   if (missing) return missing;
 
   try {
+    args = parseToolArgs(name, args);
     if (name === 'uisp_list_devices') {
       return textResult(
         await listDevices(creds!, {

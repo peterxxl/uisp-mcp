@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { getCredentials, listOutages } from '../client.js';
+import { parseToolArgs } from './args.js';
 import type { CallToolResult } from './types.js';
 import { errorResult, PAGE_PARAMS_PROPERTIES, requireCredentials, textResult } from './shared.js';
 
@@ -34,6 +35,7 @@ export async function handleOutageTool(name: string, args: Record<string, unknow
   if (missing) return missing;
 
   try {
+    args = parseToolArgs(name, args);
     if (name === 'uisp_list_outages') {
       return textResult(
         await listOutages(creds!, {

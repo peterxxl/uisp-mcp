@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { getCredentials, getSpeedTests } from '../client.js';
+import { parseToolArgs } from './args.js';
 import type { CallToolResult } from './types.js';
 import { errorResult, requireCredentials, textResult } from './shared.js';
 
@@ -16,12 +17,13 @@ export function isSpeedTestTool(name: string): boolean {
   return TOOL_NAMES.has(name);
 }
 
-export async function handleSpeedTestTool(name: string, _args: Record<string, unknown>): Promise<CallToolResult> {
+export async function handleSpeedTestTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   const creds = getCredentials();
   const missing = requireCredentials(creds);
   if (missing) return missing;
 
   try {
+    args = parseToolArgs(name, args);
     if (name === 'uisp_get_speed_tests') {
       return textResult(await getSpeedTests(creds!));
     }

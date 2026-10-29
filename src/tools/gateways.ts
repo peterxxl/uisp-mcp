@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { getCredentials, getGateway, listGateways } from '../client.js';
+import { parseToolArgs } from './args.js';
 import type { CallToolResult } from './types.js';
 import { errorResult, requireCredentials, textResult } from './shared.js';
 
@@ -31,6 +32,7 @@ export async function handleGatewayTool(name: string, args: Record<string, unkno
   if (missing) return missing;
 
   try {
+    args = parseToolArgs(name, args);
     if (name === 'uisp_list_gateways') {
       return textResult(await listGateways(creds!));
     }

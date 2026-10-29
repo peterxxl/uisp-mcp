@@ -1,31 +1,53 @@
 # UISP MCP Server
 
-MCP server for [Ubiquiti UISP](https://www.ui.com/software/uisp/)'s REST API (`/nms/api/v2.1`) - sites, devices, outages (the alerting surface), the event/audit log, data links, gateways, background tasks, available firmware, and speed tests across a UISP network/ISP-management instance - for AI assistants and the WYRE Conduit gateway.
+MCP server for [Ubiquiti UISP](https://www.ui.com/software/uisp/)'s Network REST API (`/nms/api/v2.1`) and CRM REST API (`/crm/api/v1.0`) - sites, devices, outages, the event/audit log, data links, gateways, background tasks, firmware, speed tests, and CRM clients, services, invoices, and payments - for AI assistants and the WYRE Conduit gateway. One opt-in write tool can change a customer's home Wi-Fi password on an airCube or Wi-Fi ONU.
 
 ## Authentication
 
-UISP authenticates with a static **account token**, generated in the UISP console under **Settings -> Users -> API tokens** (tokens can be issued in read-only or read/write mode - issue a read-only token for this connector). UISP has **no shared multi-tenant endpoint**: every deployment, including Ubiquiti's own hosted-cloud tier, runs at its own instance FQDN, so this connector requires **both** a token and a base URL. The token is sent as the `x-auth-token` header to `<base URL>/nms/api/v2.1/...`. In gateway mode both arrive per-request via the `X-UISP-Api-Key` and `X-UISP-Base-URL` headers; in local/stdio mode they're read once from `UISP_API_KEY` and `UISP_BASE_URL`.
+UISP Network authenticates with a static **account token**, generated in the UISP console under **Settings -> Users -> API tokens** (tokens can be issued in read-only or read/write mode - issue a read-only token unless you intentionally enable `uisp_set_wifi_password`). UISP has **no shared multi-tenant endpoint**: every deployment, including Ubiquiti's own hosted-cloud tier, runs at its own instance FQDN, so this connector requires **both** a token and a base URL. The token is sent as the `x-auth-token` header to `<base URL>/nms/api/v2.1/...`.
+
+UISP CRM is a separate API on the same host, at `<base URL>/crm/api/v1.0/...`, authenticated with an **app key** (`X-Auth-App-Key`) from **CRM -> System -> Security -> App keys** (Read is enough for every CRM tool here). That key is not the NMS token. Set it with `UISP_CRM_APP_KEY`. `UISP_CRM_BASE_URL` overrides the host; when it is unset the CRM calls use `UISP_BASE_URL`.
+
+In gateway mode NMS credentials arrive per request via `X-UISP-Api-Key` and `X-UISP-Base-URL`, and CRM credentials via `X-UISP-Crm-App-Key` and optional `X-UISP-Crm-Base-URL`. In local/stdio mode they are read once from the environment.
 
 ### Credential scope
 
-**Vendor-documented, not independently verified against a live instance** (see Verification below): UISP's own console lets a token be issued in "Read Only" or "Read/Write" mode at creation time - a genuine, vendor-supported way to scope a token to reads before it's ever handed to this connector, unlike some vendors in this fleet whose keys always inherit their creating user's full permission set. This connector's own code only ever issues `GET` requests (see Scope below), but the enforcement of "no writes" for a Read/Write-mode token is UISP's, not this connector's - issuing a Read Only token is the customer's guarantee, not something this connector can force from the outside.
+**Vendor-documented, not independently verified against a live instance** (see Verification below): UISP's own console lets a token be issued in "Read Only" or "Read/Write" mode at creation time - a genuine, vendor-supported way to scope a token to reads before it's ever handed to this connector, unlike some vendors in this fleet whose keys always inherit their creating user's full permission set. With `UISP_ENABLE_WRITES` unset, this connector only issues `GET` requests. The single write (`uisp_set_wifi_password`) is omitted from the tool list until `UISP_ENABLE_WRITES=true`, and even then it PUTs only after `confirm: true`. Issuing a Read Only NMS token and a Read CRM app key is still the customer's guarantee: this process cannot downgrade a Read/Write credential UISP already minted.
 
 A closely-related finding worth stating plainly: UISP is simultaneously a network-management platform and a lightweight ISP CRM (UCRM) - a `Site` in this API can carry a linked `ucrm.client` reference that includes the real customer's name, and `uisp_list_site_clients` returns customer records. Several tools are classified `isAdmin: true` specifically for this reason even though they read like plain infrastructure inventory - see Scope below and this connector's entry in Conduit's `vendor-config.ts` for the full accounting.
 
 ### Verification
 
-This connector was built directly against UISP's own generated OpenAPI/Swagger specification (title `UISP API`, `swagger: "2.0"`, `basePath: /nms/api/v2.1`, `securityDefinitions.UserSecurity` = the `x-auth-token` header) - every UISP installation publishes a live Swagger UI at `https://<instance>/nms/api-docs/`, and this connector's tools were verified one-by-one against that spec's 180 documented `GET` operations, not against secondary documentation or a naming convention. What it is **not** is independently verified against a live UISP instance: UISP is deployed per-ISP (self-hosted, or Ubiquiti's hosted-cloud tier requires an active ISP/network-operator account) and no such instance was available in this build environment to exercise a real token end-to-end. This is an environment limitation of the build, not a vendor-side approval gate - the hosted-cloud tier's own signup is genuinely self-serve for an ISP operator.
+The original NMS tools were built against UISP's generated OpenAPI/Swagger specification (title `UISP API`, `swagger: "2.0"`, `basePath: /nms/api/v2.1`, `securityDefinitions.UserSecurity` = the `x-auth-token` header). Every UISP installation publishes a live Swagger UI at `https://<instance>/nms/api-docs/`.
+
+CRM tools follow the official CRM blueprint at [unmscrm.docs.apiary.io](https://unmscrm.docs.apiary.io) (also linked from Ubiquiti's [UISP CRM API Usage](https://help.uisp.com/hc/en-us/articles/22590956856087-UISP-CRM-API-Usage) article). Invoice status codes used here are that blueprint's `InvoiceStatus` enum: **0 Draft, 1 Unpaid, 2 Partially paid, 3 Paid, 4 Void, 5 Processed proforma**. Paid, void, draft, and processed-proforma invoices are never counted as overdue. `GET /invoices` filters used here (`clientId`, `statuses[]`, `overdue`, `createdDateFrom` / `createdDateTo`, `limit` / `offset`, `order` / `direction`) are the ones in that blueprint.
+
+The home Wi-Fi write follows the NMS v2.1 operations `PUT /devices/aircubes/{id}/wireless` (`wifi2Ghz.key`, `wifi5Ghz.key`) and `PUT /devices/onus/{id}/wireless` (`key`, `key5g`). airMAX, airOS, airFiber, and Wave devices are refused because those keys are backbone links.
+
+None of this was exercised against a live UISP console. Shapes, status codes, and the wireless PUT bodies are verified against those docs and against mocked HTTP tests only.
 
 ## Configuration
 
 | Env var | Description |
 |---|---|
-| `UISP_API_KEY` | Account token issued by the UISP console. |
-| `UISP_BASE_URL` | Base URL of the UISP instance, e.g. `https://uisp.example.com`. |
+| `UISP_API_KEY` | NMS account token (`x-auth-token`). Required for NMS tools and for `uisp_set_wifi_password`. |
+| `UISP_BASE_URL` | Console origin, e.g. `https://uisp.example.com`. CRM calls use this host unless `UISP_CRM_BASE_URL` is set. |
+| `UISP_CRM_APP_KEY` | CRM app key (`X-Auth-App-Key`). Required for CRM tools. Independent of `UISP_API_KEY`. |
+| `UISP_CRM_BASE_URL` | Optional CRM origin. Defaults to `UISP_BASE_URL`. A trailing `/crm/api/v1.0` is accepted and not doubled. |
+| `UISP_ENABLE_WRITES` | Must be the string `true` to advertise and allow `uisp_set_wifi_password`. Unset or any other value keeps the server read-only. The tool still dry-runs unless the call sets `confirm: true`. |
 | `MCP_TRANSPORT` | `stdio` (default) or `http`. |
-| `AUTH_MODE` | `env` (default, reads the vars above) or `gateway` (credentials arrive per-request via the `X-UISP-Api-Key` / `X-UISP-Base-URL` headers, injected by the Conduit gateway). |
+| `MCP_HTTP_HOST` | HTTP bind address. Defaults to `127.0.0.1`. Set `0.0.0.0` only when something else authenticates the port (the Docker image does this for container port mapping). |
+| `MCP_HTTP_PORT` | HTTP port. Defaults to `8080`. |
+| `AUTH_MODE` | `env` (default, reads the vars above) or `gateway` (credentials arrive per-request via `X-UISP-Api-Key`, `X-UISP-Base-URL`, `X-UISP-Crm-App-Key`, and optional `X-UISP-Crm-Base-URL`). |
 | `CONDUIT_S2S_SECRET` | When set, the HTTP transport requires a valid `X-Gateway-S2S` header (Conduit sidecar auth) on every `/mcp` request. |
 | `LOG_LEVEL` | `debug` \| `info` (default) \| `warn` \| `error`. |
+
+### Security
+
+- HTTP mode binds to **127.0.0.1** unless `MCP_HTTP_HOST` is set. The Docker image sets `0.0.0.0` so published container ports work; do not publish that port on a host interface without `CONDUIT_S2S_SECRET` or another authenticator. This server does not authenticate MCP clients itself when `CONDUIT_S2S_SECRET` is unset.
+- In gateway mode the caller-supplied base URL is the host this process will call. That is an SSRF foothold if the HTTP listener is reachable by anything other than the trusted gateway: a request can aim `X-UISP-Base-URL` or `X-UISP-Crm-Base-URL` at an internal service, and the NMS token or CRM app key is attached to that request. Keep gateway mode behind the gateway, and do not accept those headers from the public internet. Embedded userinfo in a base URL is rejected; private addresses are not, because a self-hosted UISP console often lives on a LAN.
+- Logs record method, path, and status for retries, and an audit line for a confirmed Wi-Fi password change (device id, site id, client id, field names). They do not record tokens, app keys, query strings, request bodies, or response bodies. The new password is not returned by the tool.
+- CRM list tools send `limit`/`offset` (default 100). Overdue and debtor summaries walk pages and stop after 20 full pages, with `truncated: true` when the cap is hit. Tool results are a reduced view (name, amounts, dates, status), not the raw CRM record (no bank accounts).
 
 ### Request limits
 
@@ -83,9 +105,25 @@ These limits address CVE-2026-111768 / GHSA-46jr-4wx8-v453 (memory exhaustion du
 - `uisp_get_network_statistics` - get network-wide statistics (client/site counts, network health, signal/link/ISP scores, outage counts).
 - `uisp_get_summary` - get badge-count-like values across the instance (unread logs/outages/firmwares, active client/site counts).
 
+### CRM
+Read-only. Invoice status text uses the official codes above. `daysOverdue` is computed from the due date for status 1 (Unpaid) and 2 (Partially paid) only.
+
+- `uisp_search_clients` - search clients by name (`query`), email, phone, or custom id (`userIdent`). At least one field is required.
+- `uisp_get_client` - one client, including `accountBalance` (positive means credit, negative means the client owes), `accountCredit`, and `accountOutstanding`.
+- `uisp_list_client_services` - a client's services, with service plan, status, and `unmsClientSiteId` when the service is linked to an NMS site.
+- `uisp_list_invoices` - invoices for the whole network or one client. Filters: `statuses`, `overdue`, `createdDateFrom` / `createdDateTo`. Rows include number, client, total, amountToPay, dueDate, status text, and days overdue.
+- `uisp_get_invoice` - one invoice.
+- `uisp_list_overdue_invoices` - overdue invoices across pages, sorted by days overdue or amount still to pay. Paid invoices are dropped even if the server returned them.
+- `uisp_list_debtors` - per-client totals for those overdue invoices, sorted by amount or days overdue.
+- `uisp_list_payments` - payments for one client and/or a created-date range.
+- `uisp_map_client_site` - CRM service `unmsClientSiteId` to the NMS site, and the NMS site's `ucrm.client` / `ucrm.service` back to CRM. Provide `clientId`, `serviceId`, or `siteId`.
+
+### Home Wi-Fi (opt-in write)
+- `uisp_set_wifi_password` - resolve client, service, site, or device id to an airCube or Wi-Fi ONU and change the home Wi-Fi passphrase (8-63 characters). Listed only when `UISP_ENABLE_WRITES=true`. Default is a dry-run preview; the PUT runs only with `confirm: true`. airMAX, airOS, airFiber, and Wave devices are refused. The password is not logged or echoed.
+
 ## Scope
 
-**This is a deliberately narrow, read-only v1 surface covering exactly the core NOC/MSP monitoring workflow - site and device inventory, status, telemetry, outages, and the audit log - nothing else.** UISP's own OpenAPI spec documents 325 paths (180 of them `GET`) across a much larger surface: full network/device configuration and provisioning, CRM/billing, user and API-token administration, device credential storage, backups, server administration, and a planning/simulation tool. This connector implements 27 `GET` operations from that spec, verified one-by-one, and excludes everything else by design, not by oversight.
+**Read-only by default.** The NMS surface is the original NOC/MSP monitoring workflow (site and device inventory, status, telemetry, outages, and the audit log): 27 `GET` operations. CRM adds read-only client, service, invoice, and payment reads, plus a client/site mapping. The only mutating tool is `uisp_set_wifi_password`, and it is absent from `tools/list` unless `UISP_ENABLE_WRITES=true`. UISP's own OpenAPI spec documents a much larger surface (full device configuration, user and API-token administration, backups, server administration). Everything not listed above stays excluded.
 
 **Hard-excluded (device credential vault) - never implemented:** `GET /vault/credentials`, `/vault/credentials/devices`, `/vault/{deviceId}/credentials` - this is literally a store of device login credentials; excluded outright regardless of verb.
 
@@ -95,15 +133,15 @@ These limits address CVE-2026-111768 / GHSA-46jr-4wx8-v453 (memory exhaustion du
 
 **Hard-excluded (server administration and settings - can include mail-server/SMTP credentials and server-level config, not network/device data) - never implemented:** `GET /nms/settings`, `/nms/server-config`, `/nms/setup`, `/nms/mailserver`, `/nms/connection` (returns the UISP server's own connection key), `/nms/log-verbosity`, `/nms/update`, `/nms/update/log`, `/nms/traffic/blacklist`, `/nms/traffic/subnets`, `/nms/address`, `/nms/search`, `/nms/news`, `/nms/blog/posts`, `/nms/questionnaires/active`, `/nms/changed`, `/nms/server-time`, `/nms/heartbeat` (unauthenticated liveness only - `uisp_get_version` is this connector's authenticated sanity check instead).
 
-**Hard-excluded (CRM/billing - a separate subsystem with its own customer-billing data model, out of a network-monitoring connector's scope) - never implemented:** `GET /crm/roles`, `/crm/service-plans`.
+**CRM writes, exports, and admin collections stay excluded.** Implemented CRM reads are only clients, client services, invoices, and payments (see Tools). Not implemented: creating or editing clients, services, invoices, or payments; `GET /crm/roles`; service-plan administration; GDPR export `GET /gdpr/clients/{id}`.
 
-**Hard-excluded (GDPR/customer data export) - never implemented:** `GET /gdpr/clients/{id}` - a formatted export of one customer's personal data.
+**Hard-excluded (GDPR/customer data export) - never implemented:** `GET /gdpr/clients/{id}` - a formatted export of one customer's personal data. CRM tools return a reduced client/invoice view, not this export.
 
 **Hard-excluded (raw device pass-through / UDAPI proxy) - never implemented:** `GET /devices/{deviceId}/udapi/{version}/{udapiUrl*}` - a generic reverse-proxy into a device's own local API; UISP's own spec does not constrain this to `GET` semantics on the far side, so it is excluded as a category regardless of the outer verb, the same treatment `unifi-mcp` gives its analogous per-console connector-proxy path.
 
 **Hard-excluded (network discovery control-plane) - never implemented:** `GET /discovery/scan-status`, `/discovery/status/{deviceId}` - status of an active network scan, which is triggered/controlled elsewhere in the API; excluded as part of that same discovery workflow rather than picked apart.
 
-**Hard-excluded (deep per-device configuration: DHCP, firewall, routing, VLANs, NetFlow, wireless/AirCube/AirMax/OLT/ONU config) - never implemented:** every `GET` under `/devices/erouters/*`, `/devices/uisprs/*` (DHCP leases/servers, firewall filters/mangles/NATs/sets/settings, OSPF, routes, NetFlow), `/devices/{id}/router/*`, `/devices/{id}/netflow`, `/devices/{id}/vlans`, `/devices/{id}/services`, `/devices/{id}/system`, `/devices/{id}/system/unms`, `/devices/{deviceId}/mac-table*`, `/devices/{deviceId}/interfaces/{interfaceName}`, `/devices/{deviceId}/interfaces/data-link/available`, `/devices/{deviceId}/location`, and the entire family of per-device-model detail/config/station endpoints (`/devices/aircubes/*`, `/airfibers/*`, `/airmaxes/*`, `/blackboxes/*`, `/epowers/*`, `/eswitches/*`, `/olts/*`, `/onus/*`, `/solarbeams/*`, `/toughswitches/*`, `/uispss/*`, `/waves/*`, plus `/devices/aps/profiles`, `/devices/ssids`, `/devices/models`, `/devices/macs`, `/devices/ips`, `/devices/unknown`, `/devices/import/status`) - this connector's device surface is deliberately limited to identity/status/telemetry/interfaces (`uisp_list_devices`, `uisp_get_device`, `uisp_get_device_detail`, `uisp_get_device_statistics`, `uisp_list_device_interfaces`, `uisp_get_device_by_mac`, `uisp_list_discovered_devices`), not per-vendor-model configuration.
+**Hard-excluded (deep per-device configuration: DHCP, firewall, routing, VLANs, NetFlow, and wireless config other than the opt-in home Wi-Fi password) - never implemented:** every `GET` under `/devices/erouters/*`, `/devices/uisprs/*` (DHCP leases/servers, firewall filters/mangles/NATs/sets/settings, OSPF, routes, NetFlow), `/devices/{id}/router/*`, `/devices/{id}/netflow`, `/devices/{id}/vlans`, `/devices/{id}/services`, `/devices/{id}/system`, `/devices/{id}/system/unms`, `/devices/{deviceId}/mac-table*`, `/devices/{deviceId}/interfaces/{interfaceName}`, `/devices/{deviceId}/interfaces/data-link/available`, `/devices/{deviceId}/location`, and the per-device-model detail/config/station endpoints (`/devices/aircubes/*`, `/airfibers/*`, `/airmaxes/*`, `/blackboxes/*`, `/epowers/*`, `/eswitches/*`, `/olts/*`, `/onus/*`, `/solarbeams/*`, `/toughswitches/*`, `/uispss/*`, `/waves/*`, plus `/devices/aps/profiles`, `/devices/ssids`, `/devices/models`, `/devices/macs`, `/devices/ips`, `/devices/unknown`, `/devices/import/status`), with one exception: when writes are enabled, `uisp_set_wifi_password` GETs and PUTs only `/devices/aircubes/{id}/wireless` or `/devices/onus/{id}/wireless` to change the passphrase. airMAX/airOS/airFiber/Wave wireless keys are never written. The rest of the device surface stays identity/status/telemetry/interfaces.
 
 **Hard-excluded (site sub-resources beyond the core six) - never implemented:** `GET /sites/{id}/images`, `/sites/{siteId}/images/{imageId}` (binary), `/sites/{siteId}/qos`, `/sites/{siteId}/slastats` (UISP's own summary describes this as "for ISP and SLA score debugging"), `/sites/{siteId}/traffic`, `/sites/{siteId}/traffic/interval`, `/sites/traffic` (superseded for this connector's purposes by the implemented `uisp_get_site_traffic_summary`).
 

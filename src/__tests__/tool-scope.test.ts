@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { ALL_TOOLS } from '../tools/index.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { getAllTools } from '../tools/index.js';
 
 /**
  * Hard scope boundary (see README's Scope section): this connector must
@@ -51,12 +51,34 @@ describe('ALL_TOOLS scope boundary', () => {
     'uisp_get_version',
     'uisp_get_network_statistics',
     'uisp_get_summary',
+    // CRM (read-only)
+    'uisp_search_clients',
+    'uisp_get_client',
+    'uisp_list_client_services',
+    'uisp_list_invoices',
+    'uisp_get_invoice',
+    'uisp_list_overdue_invoices',
+    'uisp_list_debtors',
+    'uisp_list_payments',
+    'uisp_map_client_site',
   ].sort();
 
-  it("exposes exactly this connector's 27 read-only tools - nothing more, nothing less", () => {
-    const names = ALL_TOOLS.map((t) => t.name).sort();
+  afterEach(() => {
+    delete process.env.UISP_ENABLE_WRITES;
+  });
+
+  it('exposes exactly the read-only NMS and CRM tools when writes are disabled', () => {
+    delete process.env.UISP_ENABLE_WRITES;
+    const names = getAllTools().map((t) => t.name).sort();
     expect(names).toEqual(EXPECTED_TOOL_NAMES);
-    expect(names).toHaveLength(27);
+    expect(names).not.toContain('uisp_set_wifi_password');
+    expect(names).toHaveLength(EXPECTED_TOOL_NAMES.length);
+  });
+
+  it('adds only uisp_set_wifi_password when UISP_ENABLE_WRITES=true', () => {
+    process.env.UISP_ENABLE_WRITES = 'true';
+    const names = getAllTools().map((t) => t.name).sort();
+    expect(names).toEqual([...EXPECTED_TOOL_NAMES, 'uisp_set_wifi_password'].sort());
   });
 
   it('never exposes a write, authorization, restore, credential-vault, or token-admin tool', () => {
@@ -85,20 +107,24 @@ describe('ALL_TOOLS scope boundary', () => {
       'discover',
     ]);
 
-    for (const tool of ALL_TOOLS) {
+    process.env.UISP_ENABLE_WRITES = 'true';
+    for (const tool of getAllTools()) {
       const tokens = tool.name.split('_');
       for (const token of tokens) {
         expect(
           FORBIDDEN_TOKENS.has(token),
-          `Tool "${tool.name}" contains forbidden token "${token}" - this connector must stay read-only.`
+          `Tool "${tool.name}" contains forbidden token "${token}" - this connector must stay read-only except for uisp_set_wifi_password.`
         ).toBe(false);
       }
     }
   });
 
   it('every tool name is prefixed with uisp_', () => {
-    for (const tool of ALL_TOOLS) {
+    process.env.UISP_ENABLE_WRITES = 'true';
+    for (const tool of getAllTools()) {
       expect(tool.name.startsWith('uisp_')).toBe(true);
     }
+    const writeNamed = getAllTools().filter((tool) => tool.name.includes('password') || tool.name.split('_').includes('set'));
+    expect(writeNamed.map((tool) => tool.name)).toEqual(['uisp_set_wifi_password']);
   });
 });

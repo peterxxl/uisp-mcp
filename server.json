@@ -26,8 +26,29 @@
         },
         {
           "name": "UISP_BASE_URL",
-          "description": "Base URL of the UISP instance this connector talks to, e.g. https://uisp.example.com. UISP has no shared multi-tenant endpoint; every deployment runs at its own instance FQDN.",
+          "description": "Base URL of the UISP instance this connector talks to, e.g. https://uisp.example.com. UISP has no shared multi-tenant endpoint; every deployment runs at its own instance FQDN. CRM calls use this host unless UISP_CRM_BASE_URL is set.",
           "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "UISP_CRM_APP_KEY",
+          "description": "UISP CRM app key (X-Auth-App-Key), from CRM System > Security > App keys. Separate from UISP_API_KEY. Required for CRM tools.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "UISP_CRM_BASE_URL",
+          "description": "Optional CRM origin. Defaults to UISP_BASE_URL.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "UISP_ENABLE_WRITES",
+          "description": "Set to true to expose uisp_set_wifi_password. Any other value keeps the server read-only. A confirmed write still requires confirm:true on the tool call.",
+          "isRequired": false,
           "isSecret": false,
           "format": "string"
         },

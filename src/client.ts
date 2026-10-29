@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { logger } from './utils/logger.js';
-import { UispApiError, UispAuthError, UispRateLimitError } from './types.js';
+import { UispApiError, UispAuthError, UispRateLimitError, UispValidationError } from './types.js';
 import type {
   GetDeviceDetailParams,
   GetDeviceStatisticsParams,
@@ -19,6 +19,25 @@ import type {
   UispResponse,
 } from './types.js';
 
+export type UispApiName = 'nms' | 'crm';
+export type UispMethod = 'GET' | 'POST' | 'PUT' | 'PATCH';
+
+export interface UispRequest {
+  api: UispApiName;
+  method?: UispMethod;
+  /** Path under the API prefix, beginning with `/`. Path parameters must already be encoded. */
+  path: string;
+  query?: Record<string, unknown>;
+  body?: unknown;
+  timeoutMs?: number;
+}
+
+const NMS_PREFIX = '/nms/api/v2.1';
+const CRM_PREFIX = '/crm/api/v1.0';
+const DEFAULT_TIMEOUT_MS = 15_000;
+/** Initial attempt plus two retries. Only idempotent GETs are retried. */
+const GET_MAX_ATTEMPTS = 3;
+
 // Request-scoped credential store. In gateway mode the HTTP layer runs each
 // request inside runWithCredentials({apiKey, baseUrl}); getCredentials()
 // reads from it. Falls back to process.env for stdio/single-tenant mode.
@@ -30,14 +49,33 @@ export function runWithCredentials<T>(creds: UispCredentials, fn: () => T): T {
 
 export function getCredentials(): UispCredentials | null {
   const scoped = credStore.getStore();
-  if (scoped?.apiKey && scoped?.baseUrl) return scoped;
+  if (scoped?.baseUrl && (scoped.apiKey || scoped.crmAppKey)) {
+    return {
+      apiKey: scoped.apiKey ?? '',
+      baseUrl: scoped.baseUrl,
+      crmAppKey: scoped.crmAppKey,
+      crmBaseUrl: scoped.crmBaseUrl || scoped.baseUrl,
+    };
+  }
   const apiKey = process.env.UISP_API_KEY;
   const baseUrl = process.env.UISP_BASE_URL;
-  if (!apiKey || !baseUrl) {
-    logger.warn('Missing credentials', { hasApiKey: !!apiKey, hasBaseUrl: !!baseUrl });
+  const crmAppKey = process.env.UISP_CRM_APP_KEY;
+  const crmBaseUrl = process.env.UISP_CRM_BASE_URL || baseUrl;
+  const resolvedBase = baseUrl || crmBaseUrl;
+  if (!resolvedBase || (!apiKey && !crmAppKey)) {
+    logger.warn('Missing credentials', {
+      hasApiKey: !!apiKey,
+      hasBaseUrl: !!baseUrl,
+      hasCrmKey: !!crmAppKey,
+    });
     return null;
   }
-  return { apiKey, baseUrl };
+  return {
+    apiKey: apiKey || '',
+    baseUrl: resolvedBase,
+    crmAppKey,
+    crmBaseUrl: crmBaseUrl || resolvedBase,
+  };
 }
 
 function buildQuery(params: Record<string, unknown> = {}): URLSearchParams {
@@ -53,27 +91,119 @@ function buildQuery(params: Record<string, unknown> = {}): URLSearchParams {
   return qs;
 }
 
-async function doGet(
-  creds: UispCredentials,
-  path: string,
-  query?: Record<string, unknown>
-): Promise<UispResponse> {
-  const base = creds.baseUrl.replace(/\/+$/, '');
-  const qs = query ? buildQuery(query).toString() : '';
-  const url = `${base}/nms/api/v2.1${path}${qs ? `?${qs}` : ''}`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: { 'x-auth-token': creds.apiKey, Accept: 'application/json' },
-    signal: AbortSignal.timeout(15_000),
-  });
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+function assertSafeBaseUrl(baseUrl: string): URL {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new UispValidationError('UISP base URL is not a valid URL');
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new UispValidationError('UISP base URL must use http or https');
+  }
+  if (url.username || url.password) {
+    throw new UispValidationError('UISP base URL must not include embedded credentials');
+  }
+  if (!url.hostname) {
+    throw new UispValidationError('UISP base URL is missing a host');
+  }
+  return url;
+}
+
+/** Origin plus any non-API path prefix. Strips a trailing `/nms/api/v2.1` or `/crm/api/v1.0` so callers can pass either the console origin or a full API base. */
+function normalizeOrigin(baseUrl: string): string {
+  const url = assertSafeBaseUrl(baseUrl);
+  const path = url.pathname.replace(/\/+$/, '').replace(/\/nms\/api\/v2\.1$/, '').replace(/\/crm\/api\/v1\.0$/, '');
+  return `${url.origin}${path}`;
+}
+
+function assertRelativePath(path: string): string {
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    throw new UispValidationError('API path must be a single relative path');
+  }
+  const segments = path.split('/').filter((segment) => segment.length > 0);
+  for (const segment of segments) {
+    let decoded = segment;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw new UispValidationError('API path contains invalid percent-encoding');
+    }
+    if (
+      decoded === '' ||
+      decoded === '.' ||
+      decoded === '..' ||
+      decoded === 'undefined' ||
+      decoded === 'null' ||
+      decoded.includes('/') ||
+      decoded.includes('\\')
+    ) {
+      throw new UispValidationError('API path contains an unsafe segment');
+    }
+  }
+  return path;
+}
+
+function resolveTarget(creds: UispCredentials, api: UispApiName): { origin: string; prefix: string; headers: Record<string, string> } {
+  if (api === 'nms') {
+    if (!creds.apiKey || !creds.baseUrl) {
+      throw new UispAuthError('No UISP NMS token configured. Set UISP_API_KEY and UISP_BASE_URL.');
+    }
+    return {
+      origin: normalizeOrigin(creds.baseUrl),
+      prefix: NMS_PREFIX,
+      headers: { 'x-auth-token': creds.apiKey, Accept: 'application/json' },
+    };
+  }
+  const crmBase = creds.crmBaseUrl || creds.baseUrl;
+  if (!creds.crmAppKey || !crmBase) {
+    throw new UispAuthError('No UISP CRM app key configured. Set UISP_CRM_APP_KEY and UISP_BASE_URL (or UISP_CRM_BASE_URL).');
+  }
+  return {
+    origin: normalizeOrigin(crmBase),
+    prefix: CRM_PREFIX,
+    headers: { 'X-Auth-App-Key': creds.crmAppKey, Accept: 'application/json' },
+  };
+}
+
+function retryDelayMs(attempt: number, response?: Response): number {
+  // Tests assert retry counts; they should not wait on the production backoff.
+  if (process.env.VITEST === 'true') return 0;
+  const header = response?.headers.get('retry-after');
+  if (header && /^\d{1,3}$/.test(header.trim())) {
+    return Math.min(Number(header.trim()) * 1000, 2_000);
+  }
+  return Math.min(200 * 2 ** attempt, 2_000);
+}
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+}
+
+function networkError(err: unknown, path: string): Error {
+  if (isTimeout(err)) return new UispApiError(`UISP request timed out: ${path}`);
+  return new UispApiError(`UISP request failed: ${path}`);
+}
+
+async function readJsonBody(res: Response, path: string): Promise<UispResponse> {
+  if (res.status === 204) return null;
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as UispResponse;
+  } catch {
+    throw new UispApiError(`UISP ${path} returned a non-JSON body (HTTP ${res.status})`, res.status);
+  }
+}
+
+function throwForStatus(res: Response, path: string): void {
   // 401 (invalid/revoked token) and 429 (rate-limited) are distinct failure
-  // modes with distinct remediations - grouping them under one generic auth-
-  // error class hides a transient rate limit behind a message that reads
-  // like a bad/expired token. UISP's own console distinguishes an invalid
-  // token from a token whose role can't read the requested resource; both
-  // surface as UispAuthError since both mean "this token can't do that", not
-  // "try again".
+  // modes. The response body is intentionally not included: it can echo
+  // customer records or, on a wireless PUT, a key.
   if (res.status === 401 || res.status === 403) {
     throw new UispAuthError(`UISP rejected the request (HTTP ${res.status}): ${path}`);
   }
@@ -83,8 +213,71 @@ async function doGet(
   if (!res.ok) {
     throw new UispApiError(`UISP ${path} failed: HTTP ${res.status}`, res.status);
   }
-  if (res.status === 204) return null;
-  return res.json();
+}
+
+/**
+ * Issue one UISP NMS or CRM request.
+ *
+ * GET is retried on HTTP 429/5xx and on timeout (idempotent). POST/PUT/PATCH
+ * are never retried. Logs include the API name, path, and status only — never
+ * the token, app key, query string, request body, or response body.
+ */
+export async function uispRequest(creds: UispCredentials, request: UispRequest): Promise<UispResponse> {
+  const method = request.method ?? 'GET';
+  const target = resolveTarget(creds, request.api);
+  const path = assertRelativePath(request.path);
+  const qs = request.query ? buildQuery(request.query).toString() : '';
+  const url = `${target.origin}${target.prefix}${path}${qs ? `?${qs}` : ''}`;
+  const headers = { ...target.headers };
+  let body: string | undefined;
+  if (request.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(request.body);
+  }
+  const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxAttempts = method === 'GET' ? GET_MAX_ATTEMPTS : 1;
+
+  let lastNetworkError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers,
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      lastNetworkError = err;
+      if (method === 'GET' && attempt < maxAttempts - 1 && isTimeout(err)) {
+        logger.warn('UISP GET retry after timeout', { api: request.api, path, attempt: attempt + 1 });
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      throw networkError(err, path);
+    }
+
+    const retryable = res.status === 429 || res.status >= 500;
+    if (method === 'GET' && retryable && attempt < maxAttempts - 1) {
+      logger.warn('UISP GET retry', { api: request.api, path, status: res.status, attempt: attempt + 1 });
+      await res.body?.cancel().catch(() => undefined);
+      await sleep(retryDelayMs(attempt, res));
+      continue;
+    }
+
+    throwForStatus(res, path);
+    return readJsonBody(res, path);
+  }
+
+  throw networkError(lastNetworkError, path);
+}
+
+async function doGet(
+  creds: UispCredentials,
+  path: string,
+  query?: Record<string, unknown>
+): Promise<UispResponse> {
+  return uispRequest(creds, { api: 'nms', method: 'GET', path, query });
 }
 
 // ---------------------------------------------------------------------

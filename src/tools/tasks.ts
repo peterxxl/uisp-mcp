@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { getCredentials, getTasksInProgress, listTasks } from '../client.js';
+import { parseToolArgs } from './args.js';
 import type { CallToolResult } from './types.js';
 import { errorResult, PAGE_PARAMS_PROPERTIES, requireCredentials, textResult } from './shared.js';
 
@@ -39,6 +40,7 @@ export async function handleTaskTool(name: string, args: Record<string, unknown>
   if (missing) return missing;
 
   try {
+    args = parseToolArgs(name, args);
     if (name === 'uisp_list_tasks') {
       return textResult(
         await listTasks(creds!, {

@@ -9,8 +9,14 @@
  * Authentication section.
  */
 export interface UispCredentials {
+  /** NMS account token sent as `x-auth-token`. Empty when the caller only has a CRM app key. */
   apiKey: string;
+  /** Instance origin, e.g. `https://uisp.example.com`. */
   baseUrl: string;
+  /** CRM app key sent as `X-Auth-App-Key`. Separate from the NMS token. */
+  crmAppKey?: string;
+  /** CRM origin. Defaults to `baseUrl` when unset. */
+  crmBaseUrl?: string;
 }
 
 /** Thrown when UISP rejects the API token (HTTP 401/403) - distinct from rate limiting so callers get an honest error. */
@@ -25,6 +31,9 @@ export class UispApiError extends Error {
     super(message);
   }
 }
+
+/** Thrown when a tool argument or path segment is missing or unsafe. Never reaches the network. */
+export class UispValidationError extends Error {}
 
 /** Shared `count`/`page` pagination params, present on every UISP list endpoint that paginates. */
 export interface PageParams {

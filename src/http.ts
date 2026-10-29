@@ -9,7 +9,10 @@ import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
 export function startHttpServer(): HttpServer {
   const S2S_SECRET = process.env.CONDUIT_S2S_SECRET || '';
   const port = parseInt(process.env.MCP_HTTP_PORT || '8080', 10);
-  const host = process.env.MCP_HTTP_HOST || '0.0.0.0';
+  // Bind to loopback unless a host is set. Do not publish this port without
+  // CONDUIT_S2S_SECRET or another authenticator in front of it. The Docker
+  // image sets MCP_HTTP_HOST=0.0.0.0 so container port mapping can reach it.
+  const host = process.env.MCP_HTTP_HOST || '127.0.0.1';
   const isGatewayMode = process.env.AUTH_MODE === 'gateway';
 
   const httpServer = createHttpServer(async (req, res) => {
@@ -67,6 +70,8 @@ export function startHttpServer(): HttpServer {
 
     const apiKey = isGatewayMode ? (req.headers['x-uisp-api-key'] as string | undefined) : undefined;
     const baseUrl = isGatewayMode ? (req.headers['x-uisp-base-url'] as string | undefined) : undefined;
+    const crmAppKey = isGatewayMode ? (req.headers['x-uisp-crm-app-key'] as string | undefined) : undefined;
+    const crmBaseUrl = isGatewayMode ? (req.headers['x-uisp-crm-base-url'] as string | undefined) : undefined;
 
     const handle = async () => {
       // SECURITY-CRITICAL invariant: this transport MUST stay stateless
@@ -91,8 +96,19 @@ export function startHttpServer(): HttpServer {
       await transport.handleRequest(req, res);
     };
 
-    if (apiKey && baseUrl) {
-      await runWithCredentials({ apiKey, baseUrl }, handle);
+    const scopedBase = baseUrl || crmBaseUrl;
+    const hasNms = !!(apiKey && baseUrl);
+    const hasCrm = !!(crmAppKey && scopedBase);
+    if (hasNms || hasCrm) {
+      await runWithCredentials(
+        {
+          apiKey: apiKey || '',
+          baseUrl: scopedBase || '',
+          crmAppKey,
+          crmBaseUrl: crmBaseUrl || baseUrl,
+        },
+        handle
+      );
     } else {
       await handle();
     }

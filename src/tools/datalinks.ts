@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { getCredentials, getDataLink, listDataLinks, listSiteDataLinks } from '../client.js';
+import { parseToolArgs } from './args.js';
 import type { CallToolResult } from './types.js';
 import { errorResult, requireCredentials, textResult } from './shared.js';
 
@@ -45,6 +46,7 @@ export async function handleDataLinkTool(name: string, args: Record<string, unkn
   if (missing) return missing;
 
   try {
+    args = parseToolArgs(name, args);
     if (name === 'uisp_list_data_links') {
       return textResult(await listDataLinks(creds!, { siteLinksOnly: args.siteLinksOnly as boolean | undefined }));
     }

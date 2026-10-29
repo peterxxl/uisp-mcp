@@ -45,6 +45,9 @@ ENV NODE_ENV=production
 ENV LOG_LEVEL=info
 ENV MCP_TRANSPORT=http
 ENV MCP_HTTP_PORT=8080
+# The process defaults to 127.0.0.1. Inside a container that must accept
+# published-port traffic, listen on all interfaces. Do not publish the port
+# without CONDUIT_S2S_SECRET or another authenticator.
 ENV MCP_HTTP_HOST=0.0.0.0
 ENV AUTH_MODE=gateway
 

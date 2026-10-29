@@ -10,12 +10,25 @@ export function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
 }
 
-/** Returns an error CallToolResult if credentials are missing, else null. */
+/** Returns an error CallToolResult if NMS credentials are missing, else null. */
 export function requireCredentials(creds: UispCredentials | null): CallToolResult | null {
-  if (!creds) {
+  if (!creds?.apiKey || !creds.baseUrl) {
     return errorResult('No UISP credentials configured. Set UISP_API_KEY and UISP_BASE_URL.');
   }
   return null;
+}
+
+/** Returns an error CallToolResult if CRM credentials are missing, else null. */
+export function requireCrmCredentials(creds: UispCredentials | null): CallToolResult | null {
+  if (!creds?.crmAppKey || !(creds.crmBaseUrl || creds.baseUrl)) {
+    return errorResult('No UISP CRM credentials configured. Set UISP_CRM_APP_KEY and UISP_BASE_URL (or UISP_CRM_BASE_URL).');
+  }
+  return null;
+}
+
+/** Write tools are off unless this is exactly the string `true`. */
+export function writesEnabled(): boolean {
+  return process.env.UISP_ENABLE_WRITES === 'true';
 }
 
 /** Shared input-schema fragment for the count/page-paginated list endpoints (outages, logs, tasks, site search). */
