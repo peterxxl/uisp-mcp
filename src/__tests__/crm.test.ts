@@ -168,6 +168,7 @@ describe('CRM tools', () => {
     expect(url.searchParams.get('createdDateTo')).toBe('2026-12-31');
     expect(url.searchParams.get('order')).toBe('createdDate');
     expect(url.searchParams.get('direction')).toBe('DESC');
+    expect(JSON.parse(textOf(result)).direction).toBe('DESC');
     const body = JSON.parse(textOf(result));
     expect(body.hasMore).toBe(true);
     expect(body.items).toHaveLength(1);
@@ -176,6 +177,14 @@ describe('CRM tools', () => {
     expect(body.items[0].daysOverdue).toBeGreaterThan(0);
     expect(body.items[0].number).toBe('INV-1');
     expect(body.statusCodes['3']).toBe('Paid');
+  });
+
+  it('lists invoices newest first when order is omitted', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    await runWithCredentials(creds, () => handleCrmTool('uisp_list_invoices', { limit: 5, offset: 0 }));
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.get('order')).toBe('createdDate');
+    expect(url.searchParams.get('direction')).toBe('DESC');
   });
 
   it('gets one invoice', async () => {
@@ -302,8 +311,8 @@ describe('CRM tools', () => {
     expect((fetchMock.mock.calls[1][1] as RequestInit).headers).toMatchObject({ 'x-auth-token': 'nms-token' });
     const body = JSON.parse(textOf(result));
     expect(body.links[0].unmsClientSiteId).toBe('site-uuid');
-    expect(body.sites[0].crmClientId).toBe('7');
-    expect(body.sites[0].crmServiceId).toBe('9');
+    expect(body.sites[0].crmClientId).toBe(7);
+    expect(body.sites[0].crmServiceId).toBe(9);
     expect(body.client.displayName).toBe('Ana Haoa');
   });
 
@@ -321,7 +330,7 @@ describe('CRM tools', () => {
     expect(result.isError).toBeUndefined();
     const body = JSON.parse(textOf(result));
     expect(body.crmConfigured).toBe(false);
-    expect(body.sites[0].crmClientId).toBe('7');
+    expect(body.sites[0].crmClientId).toBe(7);
     expect(body.note).toMatch(/CRM credentials/);
   });
 

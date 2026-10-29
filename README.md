@@ -35,6 +35,7 @@ None of this was exercised against a live UISP console. Shapes, status codes, an
 | `UISP_CRM_APP_KEY` | CRM app key (`X-Auth-App-Key`). Required for CRM tools. Independent of `UISP_API_KEY`. |
 | `UISP_CRM_BASE_URL` | Optional CRM origin. Defaults to `UISP_BASE_URL`. A trailing `/crm/api/v1.0` is accepted and not doubled. |
 | `UISP_ENABLE_WRITES` | Must be the string `true` to advertise and allow `uisp_set_wifi_password`. Unset or any other value keeps the server read-only. The tool still dry-runs unless the call sets `confirm: true`. |
+| `UISP_TIMEZONE` | IANA timezone for invoice day counts. Defaults to `Pacific/Easter` (Rapa Nui, UTC−6, no daylight saving). Set `dueDate` to count days in each invoice dueDate's own offset. Overdue itself follows the due instant, the same rule as CRM `overdue=1`. |
 | `MCP_TRANSPORT` | `stdio` (default) or `http`. |
 | `MCP_HTTP_HOST` | HTTP bind address. Defaults to `127.0.0.1`. Set `0.0.0.0` only when something else authenticates the port (the Docker image does this for container port mapping). |
 | `MCP_HTTP_PORT` | HTTP port. Defaults to `8080`. |
@@ -67,10 +68,10 @@ These limits address CVE-2026-111768 / GHSA-46jr-4wx8-v453 (memory exhaustion du
 - `uisp_get_site_traffic_summary` - get a site's total upload/download for a given interval up to now.
 
 ### Devices
-- `uisp_list_devices` - list devices (hostname/IP/MAC, status, parent site).
+- `uisp_list_devices` - list devices (hostname/IP/MAC, status, parent site). Compact page of 50 by default; `detail: "full"` returns raw objects for that page. NMS does not page this endpoint, so the slice happens here.
 - `uisp_get_device` - get a single device's status overview.
 - `uisp_get_device_detail` - get a device's detail, optionally including interfaces and/or connected stations.
-- `uisp_get_device_statistics` - get device telemetry (CPU/RAM/signal/temperature/throughput).
+- `uisp_get_device_statistics` - device telemetry bucketed by `interval`. Returns the newest `limit` buckets (default 24; `period` is an alias) so the series stays small.
 - `uisp_list_device_interfaces` - list a device's network interfaces, including configured IP addresses.
 - `uisp_get_device_by_mac` - look up a device by its MAC address.
 - `uisp_list_discovered_devices` - list devices discovered on the network but not yet added.
@@ -82,9 +83,9 @@ These limits address CVE-2026-111768 / GHSA-46jr-4wx8-v453 (memory exhaustion du
 - `uisp_list_logs` - list the UISP event/audit log (logins, device state changes, backups, upgrades).
 
 ### Data Links
-- `uisp_list_data_links` - list data links (the wireless/wired links UISP has mapped between devices and sites).
+- `uisp_list_data_links` - list data links. Compact page of 50 by default (endpoints, frequency, signal). `detail: "full"` keeps the raw link for that page.
 - `uisp_get_data_link` - get a single data link's detail.
-- `uisp_list_site_data_links` - list data links attached to a given site.
+- `uisp_list_site_data_links` - data links for one site, with the same compact paging as `uisp_list_data_links`.
 
 ### Gateways
 - `uisp_list_gateways` - list gateways (routers configured as network gateways) and their NetFlow/QoS/suspend configuration.
@@ -102,7 +103,7 @@ These limits address CVE-2026-111768 / GHSA-46jr-4wx8-v453 (memory exhaustion du
 
 ### System
 - `uisp_get_version` - get the UISP version, deployment type, and build info. Useful as a credential/connectivity sanity check.
-- `uisp_get_network_statistics` - get network-wide statistics (client/site counts, network health, signal/link/ISP scores, outage counts).
+- `uisp_get_network_statistics` - network-wide statistics. `interval` is the UISP bucket; `limit` or `period` is how many recent buckets to return (default 24, newest first). Summary counts stay in the result.
 - `uisp_get_summary` - get badge-count-like values across the instance (unread logs/outages/firmwares, active client/site counts).
 
 ### CRM
@@ -111,12 +112,12 @@ Read-only. Invoice status text uses the official codes above. `daysOverdue` is c
 - `uisp_search_clients` - search clients by name (`query`), email, phone, or custom id (`userIdent`). At least one field is required.
 - `uisp_get_client` - one client, including `accountBalance` (positive means credit, negative means the client owes), `accountCredit`, and `accountOutstanding`.
 - `uisp_list_client_services` - a client's services, with service plan, status, and `unmsClientSiteId` when the service is linked to an NMS site.
-- `uisp_list_invoices` - invoices for the whole network or one client. Filters: `statuses`, `overdue`, `createdDateFrom` / `createdDateTo`. Rows include number, client, total, amountToPay, dueDate, status text, and days overdue.
+- `uisp_list_invoices` - invoices for the whole network or one client. Defaults to newest first (`createdDate` DESC). Filters: `statuses`, `overdue`, `createdDateFrom` / `createdDateTo`. Rows include number, client, total, amountToPay, dueDate, status text, and days overdue. An invoice is overdue once its due instant has passed; `daysOverdue` is whole calendar days in `UISP_TIMEZONE`.
 - `uisp_get_invoice` - one invoice.
 - `uisp_list_overdue_invoices` - overdue invoices across pages, sorted by days overdue or amount still to pay. Paid invoices are dropped even if the server returned them.
 - `uisp_list_debtors` - per-client totals for those overdue invoices, sorted by amount or days overdue.
 - `uisp_list_payments` - payments for one client and/or a created-date range.
-- `uisp_map_client_site` - CRM service `unmsClientSiteId` to the NMS site, and the NMS site's `ucrm.client` / `ucrm.service` back to CRM. Provide `clientId`, `serviceId`, or `siteId`.
+- `uisp_map_client_site` - CRM service `unmsClientSiteId` to the NMS site, and the NMS site's `ucrm.client` / `ucrm.service` back to CRM. CRM client and service ids are numbers. Provide `clientId`, `serviceId`, or `siteId`.
 
 ### Home Wi-Fi (opt-in write)
 - `uisp_set_wifi_password` - resolve client, service, site, or device id to an airCube or Wi-Fi ONU and change the home Wi-Fi passphrase (8-63 characters). Listed only when `UISP_ENABLE_WRITES=true`. Default is a dry-run preview; the PUT runs only with `confirm: true`. airMAX, airOS, airFiber, and Wave devices are refused. The password is not logged or echoed.

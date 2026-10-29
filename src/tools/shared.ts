@@ -13,7 +13,7 @@ export function errorResult(message: string): CallToolResult {
 /** Returns an error CallToolResult if NMS credentials are missing, else null. */
 export function requireCredentials(creds: UispCredentials | null): CallToolResult | null {
   if (!creds?.apiKey || !creds.baseUrl) {
-    return errorResult('No UISP credentials configured. Set UISP_API_KEY and UISP_BASE_URL.');
+    return errorResult('UISP NMS failed: missing credentials. Set UISP_API_KEY and UISP_BASE_URL.');
   }
   return null;
 }
@@ -21,7 +21,7 @@ export function requireCredentials(creds: UispCredentials | null): CallToolResul
 /** Returns an error CallToolResult if CRM credentials are missing, else null. */
 export function requireCrmCredentials(creds: UispCredentials | null): CallToolResult | null {
   if (!creds?.crmAppKey || !(creds.crmBaseUrl || creds.baseUrl)) {
-    return errorResult('No UISP CRM credentials configured. Set UISP_CRM_APP_KEY and UISP_BASE_URL (or UISP_CRM_BASE_URL).');
+    return errorResult('UISP CRM failed: missing credentials. Set UISP_CRM_APP_KEY and UISP_BASE_URL (or UISP_CRM_BASE_URL).');
   }
   return null;
 }

@@ -68,7 +68,7 @@ interface SiteLink {
 function devicesFrom(body: unknown): Record<string, unknown>[] {
   if (Array.isArray(body)) return body.filter(isRecord);
   if (isRecord(body) && Array.isArray(body.items)) return body.items.filter(isRecord);
-  throw new UispApiError('UISP /devices returned an unexpected collection shape');
+  throw new UispApiError('UISP NMS /devices failed: unexpected collection');
 }
 
 async function servicesForClient(creds: UispCredentials, clientId: number): Promise<ServiceSummary[]> {
@@ -156,7 +156,7 @@ async function setWifiPassword(creds: UispCredentials, args: Record<string, unkn
   let rawDevices: Record<string, unknown>[] = [];
   if (deviceId) {
     const raw = await getDevice(creds, deviceId);
-    if (!isRecord(raw)) throw new UispApiError('UISP /devices/{id} returned an unexpected response');
+    if (!isRecord(raw)) throw new UispApiError('UISP NMS /devices/{id} failed: unexpected response');
     const view = deviceView(raw);
     if (links.length > 0 && view.siteId && !links.some((link) => link.siteId === view.siteId)) {
       throw new WifiConfigError(`Device ${deviceId} is not on a site linked to this client or service.`);

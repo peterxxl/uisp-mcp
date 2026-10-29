@@ -88,8 +88,8 @@ export function listInvoices(creds: UispCredentials, params: ListInvoicesParams)
     number: params.number,
     limit: params.limit,
     offset: params.offset,
-    order: params.order,
-    direction: params.direction,
+    order: params.order ?? 'createdDate',
+    direction: params.direction ?? 'DESC',
   });
 }
 

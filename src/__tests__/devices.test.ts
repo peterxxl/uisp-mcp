@@ -30,7 +30,10 @@ describe('handleDeviceTool', () => {
     expect(new URL(url).searchParams.getAll('type')).toEqual(['airMax', 'airFiber']);
     expect(new URL(url).searchParams.getAll('role')).toEqual(['ap']);
     expect((init.headers as Record<string, string>)['x-auth-token']).toBe('token-1');
-    expect(JSON.parse(textOf(result))[0].identification.hostname).toBe('ap-1');
+    const body = JSON.parse(textOf(result));
+    expect(body.items[0].hostname).toBe('ap-1');
+    expect(body.detail).toBe('compact');
+    expect(body.limit).toBe(50);
   });
 
   it('uisp_get_device scopes the request to the device ID in the path', async () => {
@@ -92,7 +95,7 @@ describe('handleDeviceTool', () => {
     const result = await runWithCredentials(creds, () => handleDeviceTool('uisp_list_devices', {}));
 
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toMatch(/rate-limited/i);
+    expect(textOf(result)).toMatch(/UISP NMS \/devices failed: HTTP 429/);
   });
 
   it('returns a credential error without calling fetch when no token/baseUrl is configured', async () => {

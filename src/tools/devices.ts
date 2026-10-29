@@ -11,6 +11,7 @@ import {
 } from '../client.js';
 import { parseToolArgs } from './args.js';
 import type { CallToolResult } from './types.js';
+import { compactDevice, projectList, projectStatistics } from '../nms-project.js';
 import { errorResult, requireCredentials, textResult } from './shared.js';
 
 const DEVICE_TYPES = [
@@ -38,15 +39,18 @@ export const DEVICE_TOOLS: Tool[] = [
   {
     name: 'uisp_list_devices',
     description:
-      "List devices (hostname/IP/MAC, status, parent site), optionally filtered by site/type/role/authorization. Each device's `id` chains into uisp_get_device, uisp_get_device_detail, uisp_get_device_statistics, and uisp_list_device_interfaces.",
+      "List devices (hostname/IP/MAC, status, parent site), optionally filtered by site/type/role/authorization. Defaults to a compact page (limit 50). NMS returns every device; this tool slices the result. Set detail to \"full\" for the raw device objects on that page. Each device's `id` chains into uisp_get_device, uisp_get_device_detail, uisp_get_device_statistics, and uisp_list_device_interfaces.",
     inputSchema: {
       type: 'object',
       properties: {
         siteId: { type: 'string', description: 'Filter to devices at this site (from uisp_list_sites).' },
-        withInterfaces: { type: 'boolean', description: 'Include each device\'s interfaces in the response.' },
+        withInterfaces: { type: 'boolean', description: 'Ask NMS for interfaces. Only included when detail is "full".' },
         authorized: { type: 'boolean', description: 'Filter to authorized (true) or pending-authorization (false) devices.' },
         type: { type: 'array', items: { type: 'string', enum: DEVICE_TYPES }, description: 'Filter by device type.' },
         role: { type: 'array', items: { type: 'string', enum: DEVICE_ROLES }, description: 'Filter by device role.' },
+        limit: { type: 'number', description: 'Page size, 1-200. Defaults to 50.' },
+        offset: { type: 'number', description: 'Zero-based index into the NMS list. Defaults to 0.' },
+        detail: { type: 'string', enum: ['compact', 'full'], description: 'compact (default) keeps identity and status. full keeps the raw device on this page.' },
       },
     },
   },
@@ -73,7 +77,8 @@ export const DEVICE_TOOLS: Tool[] = [
   },
   {
     name: 'uisp_get_device_statistics',
-    description: 'Get device telemetry (CPU/RAM/signal/temperature/throughput) bucketed by interval.',
+    description:
+      'Get device telemetry (CPU/RAM/signal/temperature/throughput) bucketed by interval. interval is the UISP bucket. limit or period is how many recent buckets to return (default 24, newest first). detail "full" keeps raw points on that page.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -81,8 +86,12 @@ export const DEVICE_TOOLS: Tool[] = [
         interval: {
           type: 'string',
           enum: ['hour', 'day', 'month', 'quarter', 'year'],
-          description: 'Time bucket for the statistics.',
+          description: 'Time bucket requested from UISP.',
         },
+        limit: { type: 'number', description: 'How many recent buckets to return, 1-500. Defaults to 24. Overrides period.' },
+        period: { type: 'number', description: 'Alias of limit: number of recent buckets. Defaults to 24.' },
+        offset: { type: 'number', description: 'Skip this many newest buckets. Defaults to 0.' },
+        detail: { type: 'string', enum: ['compact', 'full'], description: 'compact (default) keeps scalar fields on each point. full keeps the raw point.' },
       },
       required: ['id', 'interval'],
     },
@@ -125,13 +134,19 @@ export async function handleDeviceTool(name: string, args: Record<string, unknow
   try {
     args = parseToolArgs(name, args);
     if (name === 'uisp_list_devices') {
+      const detail = args.detail === 'full' ? 'full' : 'compact';
+      const body = await listDevices(creds!, {
+        siteId: args.siteId as string | undefined,
+        withInterfaces: detail === 'full' ? (args.withInterfaces as boolean | undefined) : undefined,
+        authorized: args.authorized as boolean | undefined,
+        type: args.type as string[] | undefined,
+        role: args.role as string[] | undefined,
+      });
       return textResult(
-        await listDevices(creds!, {
-          siteId: args.siteId as string | undefined,
-          withInterfaces: args.withInterfaces as boolean | undefined,
-          authorized: args.authorized as boolean | undefined,
-          type: args.type as string[] | undefined,
-          role: args.role as string[] | undefined,
+        projectList(body, compactDevice, {
+          limit: args.limit as number,
+          offset: args.offset as number,
+          detail,
         })
       );
     }
@@ -145,10 +160,14 @@ export async function handleDeviceTool(name: string, args: Record<string, unknow
     }
 
     if (name === 'uisp_get_device_statistics') {
+      const interval = args.interval as 'hour' | 'day' | 'month' | 'quarter' | 'year';
+      const body = await getDeviceStatistics(creds!, { id: args.id as string, interval });
       return textResult(
-        await getDeviceStatistics(creds!, {
-          id: args.id as string,
-          interval: args.interval as 'hour' | 'day' | 'month' | 'quarter' | 'year',
+        projectStatistics(body, {
+          limit: (args.limit as number | undefined) ?? (args.period as number | undefined) ?? 24,
+          offset: args.offset as number,
+          detail: args.detail === 'full' ? 'full' : 'compact',
+          interval,
         })
       );
     }

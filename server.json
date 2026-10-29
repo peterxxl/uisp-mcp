@@ -46,6 +46,13 @@
           "format": "string"
         },
         {
+          "name": "UISP_TIMEZONE",
+          "description": "IANA timezone for CRM invoice day counts. Defaults to Pacific/Easter. Set to dueDate to use each invoice dueDate offset.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
           "name": "UISP_ENABLE_WRITES",
           "description": "Set to true to expose uisp_set_wifi_password. Any other value keeps the server read-only. A confirmed write still requires confirm:true on the tool call.",
           "isRequired": false,

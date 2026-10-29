@@ -151,7 +151,7 @@ function assertRelativePath(path: string): string {
 function resolveTarget(creds: UispCredentials, api: UispApiName): { origin: string; prefix: string; headers: Record<string, string> } {
   if (api === 'nms') {
     if (!creds.apiKey || !creds.baseUrl) {
-      throw new UispAuthError('No UISP NMS token configured. Set UISP_API_KEY and UISP_BASE_URL.');
+      throw new UispAuthError('UISP NMS failed: missing credentials. Set UISP_API_KEY and UISP_BASE_URL.');
     }
     return {
       origin: normalizeOrigin(creds.baseUrl),
@@ -161,7 +161,7 @@ function resolveTarget(creds: UispCredentials, api: UispApiName): { origin: stri
   }
   const crmBase = creds.crmBaseUrl || creds.baseUrl;
   if (!creds.crmAppKey || !crmBase) {
-    throw new UispAuthError('No UISP CRM app key configured. Set UISP_CRM_APP_KEY and UISP_BASE_URL (or UISP_CRM_BASE_URL).');
+    throw new UispAuthError('UISP CRM failed: missing credentials. Set UISP_CRM_APP_KEY and UISP_BASE_URL (or UISP_CRM_BASE_URL).');
   }
   return {
     origin: normalizeOrigin(crmBase),
@@ -184,34 +184,42 @@ function isTimeout(err: unknown): boolean {
   return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
 }
 
-function networkError(err: unknown, path: string): Error {
-  if (isTimeout(err)) return new UispApiError(`UISP request timed out: ${path}`);
-  return new UispApiError(`UISP request failed: ${path}`);
+function apiLabel(api: UispApiName): 'NMS' | 'CRM' {
+  return api === 'crm' ? 'CRM' : 'NMS';
 }
 
-async function readJsonBody(res: Response, path: string): Promise<UispResponse> {
+/** One shape for both APIs: `UISP NMS /path failed: HTTP 401`. The body is never included. */
+export function uispFailure(api: UispApiName, path: string, detail: string): string {
+  return `UISP ${apiLabel(api)} ${path} failed: ${detail}`;
+}
+
+function networkError(err: unknown, api: UispApiName, path: string): Error {
+  if (isTimeout(err)) return new UispApiError(uispFailure(api, path, 'timeout'));
+  return new UispApiError(uispFailure(api, path, 'network'));
+}
+
+async function readJsonBody(res: Response, api: UispApiName, path: string): Promise<UispResponse> {
   if (res.status === 204) return null;
   const text = await res.text();
   if (!text) return null;
   try {
     return JSON.parse(text) as UispResponse;
   } catch {
-    throw new UispApiError(`UISP ${path} returned a non-JSON body (HTTP ${res.status})`, res.status);
+    throw new UispApiError(uispFailure(api, path, `non-JSON body (HTTP ${res.status})`), res.status);
   }
 }
 
-function throwForStatus(res: Response, path: string): void {
-  // 401 (invalid/revoked token) and 429 (rate-limited) are distinct failure
-  // modes. The response body is intentionally not included: it can echo
-  // customer records or, on a wireless PUT, a key.
+function throwForStatus(res: Response, api: UispApiName, path: string): void {
+  // 401/403 and 429 stay distinct classes. The wording matches every other
+  // failure: `UISP NMS|CRM <path> failed: HTTP <status>`.
   if (res.status === 401 || res.status === 403) {
-    throw new UispAuthError(`UISP rejected the request (HTTP ${res.status}): ${path}`);
+    throw new UispAuthError(uispFailure(api, path, `HTTP ${res.status}`));
   }
   if (res.status === 429) {
-    throw new UispRateLimitError(`UISP rate-limited the request (HTTP 429): ${path}`);
+    throw new UispRateLimitError(uispFailure(api, path, 'HTTP 429'));
   }
   if (!res.ok) {
-    throw new UispApiError(`UISP ${path} failed: HTTP ${res.status}`, res.status);
+    throw new UispApiError(uispFailure(api, path, `HTTP ${res.status}`), res.status);
   }
 }
 
@@ -254,7 +262,7 @@ export async function uispRequest(creds: UispCredentials, request: UispRequest):
         await sleep(retryDelayMs(attempt));
         continue;
       }
-      throw networkError(err, path);
+      throw networkError(err, request.api, path);
     }
 
     const retryable = res.status === 429 || res.status >= 500;
@@ -265,11 +273,11 @@ export async function uispRequest(creds: UispCredentials, request: UispRequest):
       continue;
     }
 
-    throwForStatus(res, path);
-    return readJsonBody(res, path);
+    throwForStatus(res, request.api, path);
+    return readJsonBody(res, request.api, path);
   }
 
-  throw networkError(lastNetworkError, path);
+  throw networkError(lastNetworkError, request.api, path);
 }
 
 async function doGet(

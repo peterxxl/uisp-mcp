@@ -12,6 +12,7 @@ import {
 } from '../crm-api.js';
 import {
   INVOICE_STATUS_LABELS,
+  configuredTimezone,
   pageResult,
   sortInvoices,
   summarizeClient,
@@ -84,7 +85,7 @@ export const CRM_TOOLS: Tool[] = [
   },
   {
     name: 'uisp_list_invoices',
-    description: `List CRM invoices for the whole network or one client. Filters: statuses (array of status codes), overdue, and createdDateFrom/createdDateTo (YYYY-MM-DD). ${STATUS_NOTE} Each row includes number, client, total, amountToPay, dueDate, a human-readable status, and daysOverdue.`,
+    description: `List CRM invoices for the whole network or one client. Defaults to newest first (order createdDate, direction DESC). Filters: statuses (array of status codes), overdue, and createdDateFrom/createdDateTo (YYYY-MM-DD). ${STATUS_NOTE} Days overdue are calendar days in UISP_TIMEZONE (default Pacific/Easter); an invoice is overdue as soon as its dueDate instant has passed, matching CRM overdue=1. Each row includes number, client, total, amountToPay, dueDate, a human-readable status, and daysOverdue.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -98,8 +99,12 @@ export const CRM_TOOLS: Tool[] = [
         createdDateFrom: { type: 'string', description: 'Inclusive created-date lower bound, YYYY-MM-DD.' },
         createdDateTo: { type: 'string', description: 'Inclusive created-date upper bound, YYYY-MM-DD.' },
         number: { type: 'string', description: 'Invoice number.' },
-        order: { type: 'string', enum: ['clientFirstName', 'clientLastName', 'createdDate', 'number'] },
-        direction: { type: 'string', enum: ['ASC', 'DESC'] },
+        order: {
+          type: 'string',
+          enum: ['clientFirstName', 'clientLastName', 'createdDate', 'number'],
+          description: 'Sort field. Defaults to createdDate.',
+        },
+        direction: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort direction. Defaults to DESC (newest first).' },
         ...CRM_PAGE,
       },
     },
@@ -206,9 +211,9 @@ function siteUcrm(raw: unknown): {
   id: string | null;
   name: string | null;
   type: string | null;
-  crmClientId: string | null;
+  crmClientId: number | null;
   crmClientName: string | null;
-  crmServiceId: string | null;
+  crmServiceId: number | null;
   crmServiceName: string | null;
 } {
   if (!isRecord(raw)) {
@@ -223,9 +228,9 @@ function siteUcrm(raw: unknown): {
     id: id != null ? String(id) : null,
     name: typeof identification.name === 'string' ? identification.name : null,
     type: typeof identification.type === 'string' ? identification.type : null,
-    crmClientId: client.id != null ? String(client.id) : null,
+    crmClientId: crmNumericId(client.id),
     crmClientName: typeof client.name === 'string' ? client.name : null,
-    crmServiceId: service.id != null ? String(service.id) : null,
+    crmServiceId: crmNumericId(service.id),
     crmServiceName: typeof service.name === 'string' ? service.name : null,
   };
 }
@@ -296,6 +301,9 @@ export async function handleCrmTool(name: string, args: Record<string, unknown>)
         ...pageResult(items, limit, offset),
         returned: items.length,
         hasMore: rows.length === limit,
+        order: args.order,
+        direction: args.direction,
+        timezone: configuredTimezone(),
         statusCodes: INVOICE_STATUS_LABELS,
       });
     }
@@ -310,6 +318,7 @@ export async function handleCrmTool(name: string, args: Record<string, unknown>)
       return textResult({
         sort,
         truncated,
+        timezone: configuredTimezone(),
         statusCodes: INVOICE_STATUS_LABELS,
         returned: invoices.length,
         invoices: sortInvoices(invoices, sort),
@@ -322,6 +331,7 @@ export async function handleCrmTool(name: string, args: Record<string, unknown>)
       return textResult({
         sort,
         truncated,
+        timezone: configuredTimezone(),
         statusCodes: INVOICE_STATUS_LABELS,
         ...summarizeDebtors(invoices, sort),
       });
@@ -360,7 +370,7 @@ async function mapClientSite(creds: UispCredentials | null, args: Record<string,
   const crmReady = !!(creds?.crmAppKey && (creds.crmBaseUrl || creds.baseUrl));
 
   if (!creds || (!nmsReady && !crmReady)) {
-    throw new Error('No UISP credentials configured. Set UISP_API_KEY and/or UISP_CRM_APP_KEY plus UISP_BASE_URL.');
+    throw new Error('UISP NMS failed: missing credentials. Set UISP_API_KEY and/or UISP_CRM_APP_KEY plus UISP_BASE_URL.');
   }
   if (wantsCrm && !crmReady) {
     const missing = requireCrmCredentials(creds);
@@ -402,15 +412,14 @@ async function mapClientSite(creds: UispCredentials | null, args: Record<string,
 
   let resolvedClientId = clientId ?? services.find((service) => service.clientId != null)?.clientId ?? null;
   if (resolvedClientId == null) {
-    const fromSite = sites.find((site) => site.crmClientId && /^[1-9]\d*$/.test(site.crmClientId))?.crmClientId;
-    if (fromSite) resolvedClientId = Number(fromSite);
+    resolvedClientId = sites.find((site) => site.crmClientId != null)?.crmClientId ?? null;
   }
   const client = crmReady && resolvedClientId != null ? summarizeClient(await getClient(creds, resolvedClientId)) : null;
 
   if (crmReady && resolvedClientId != null && serviceId == null && services.length === 0) {
-    const fromSiteService = sites.find((site) => site.crmServiceId && /^[1-9]\d*$/.test(site.crmServiceId))?.crmServiceId;
-    if (fromSiteService) {
-      services = [summarizeService(await getService(creds, Number(fromSiteService)))];
+    const fromSiteService = sites.find((site) => site.crmServiceId != null)?.crmServiceId;
+    if (fromSiteService != null) {
+      services = [summarizeService(await getService(creds, fromSiteService))];
     }
   }
 
@@ -438,6 +447,12 @@ async function mapClientSite(creds: UispCredentials | null, args: Record<string,
         unmsClientSiteStatus: service.unmsClientSiteStatus,
       })),
   };
+}
+
+function crmNumericId(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) return Number(value);
+  return null;
 }
 
 function stripErrorPrefix(result: CallToolResult): string {

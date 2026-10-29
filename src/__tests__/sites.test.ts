@@ -92,7 +92,7 @@ describe('handleSiteTool', () => {
     const result = await runWithCredentials(creds, () => handleSiteTool('uisp_list_sites', {}));
 
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toMatch(/rejected the request/i);
+    expect(textOf(result)).toMatch(/UISP NMS \/sites failed: HTTP 401/);
   });
 
   it('returns a credential error without calling fetch when no token/baseUrl is configured', async () => {

@@ -33,6 +33,12 @@ const pageNumber = z.number().int().min(1).max(100_000);
 
 const crmLimit = z.number().int().min(1).max(500).default(100);
 const crmOffset = z.number().int().min(0).max(1_000_000).default(0);
+const detailLevel = z.enum(['compact', 'full']).default('compact');
+const listLimit = z.number().int().min(1).max(200).default(50);
+const listOffset = z.number().int().min(0).max(100_000).default(0);
+const statsLimit = z.number().int().min(1).max(500).optional();
+const statsPeriod = z.number().int().min(1).max(500).optional();
+const statsOffset = z.number().int().min(0).max(100_000).default(0);
 
 const deviceTypes = [
   'onu',
@@ -114,6 +120,9 @@ export const TOOL_SCHEMAS: Record<string, z.ZodType> = {
     authorized: z.boolean().optional(),
     type: z.array(z.enum(deviceTypes)).max(20).optional(),
     role: z.array(z.enum(deviceRoles)).max(20).optional(),
+    limit: listLimit,
+    offset: listOffset,
+    detail: detailLevel,
   }),
   uisp_get_device: z.object({ id: pathSegmentSchema }),
   uisp_get_device_detail: z.object({
@@ -123,6 +132,10 @@ export const TOOL_SCHEMAS: Record<string, z.ZodType> = {
   uisp_get_device_statistics: z.object({
     id: pathSegmentSchema,
     interval: z.enum(['hour', 'day', 'month', 'quarter', 'year']),
+    limit: statsLimit,
+    period: statsPeriod,
+    offset: statsOffset,
+    detail: detailLevel,
   }),
   uisp_list_device_interfaces: z.object({ deviceId: pathSegmentSchema }),
   uisp_get_device_by_mac: z.object({
@@ -151,9 +164,19 @@ export const TOOL_SCHEMAS: Record<string, z.ZodType> = {
     count: pageCount,
     page: pageNumber,
   }),
-  uisp_list_data_links: z.object({ siteLinksOnly: z.boolean().optional() }),
+  uisp_list_data_links: z.object({
+    siteLinksOnly: z.boolean().optional(),
+    limit: listLimit,
+    offset: listOffset,
+    detail: detailLevel,
+  }),
   uisp_get_data_link: z.object({ id: pathSegmentSchema }),
-  uisp_list_site_data_links: z.object({ siteId: pathSegmentSchema }),
+  uisp_list_site_data_links: z.object({
+    siteId: pathSegmentSchema,
+    limit: listLimit,
+    offset: listOffset,
+    detail: detailLevel,
+  }),
   uisp_list_gateways: empty,
   uisp_get_gateway: z.object({ id: pathSegmentSchema }),
   uisp_list_tasks: z.object({
@@ -169,6 +192,10 @@ export const TOOL_SCHEMAS: Record<string, z.ZodType> = {
   uisp_get_network_statistics: z.object({
     interval: z.enum(['hour', 'day', 'month', 'quarter', 'year']),
     siri: z.boolean().optional(),
+    limit: statsLimit,
+    period: statsPeriod,
+    offset: statsOffset,
+    detail: detailLevel,
   }),
   uisp_get_summary: z.object({
     logsLevel: z.array(z.enum(['info', 'warning', 'error'])).min(1).max(3),
@@ -202,8 +229,8 @@ export const TOOL_SCHEMAS: Record<string, z.ZodType> = {
     createdDateFrom: isoDateSchema.optional(),
     createdDateTo: isoDateSchema.optional(),
     number: z.string().trim().min(1).max(64).optional(),
-    order: z.enum(['clientFirstName', 'clientLastName', 'createdDate', 'number']).optional(),
-    direction: z.enum(['ASC', 'DESC']).optional(),
+    order: z.enum(['clientFirstName', 'clientLastName', 'createdDate', 'number']).default('createdDate'),
+    direction: z.enum(['ASC', 'DESC']).default('DESC'),
     limit: crmLimit,
     offset: crmOffset,
   }),

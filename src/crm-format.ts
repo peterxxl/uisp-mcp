@@ -49,7 +49,21 @@ export function serviceStatusLabel(status: unknown): string {
   return SERVICE_STATUS_LABELS[status] ?? `Unknown (${status})`;
 }
 
-/** CRM timestamps look like `2016-09-26T00:00:00+0000` (no colon in the offset). */
+/**
+ * CRM timestamps look like `2016-09-26T00:00:00+0000` or
+ * `2026-11-01T13:06:12-0500` (offset, often without a colon).
+ * The offset is part of the instant. Overdue matches CRM's `overdue=1`
+ * filter: the due instant has passed. Day counts use calendar dates in
+ * `UISP_TIMEZONE` (default `Pacific/Easter`, Rapa Nui, no DST). Set
+ * `UISP_TIMEZONE=dueDate` to count days in each dueDate's own offset instead.
+ */
+export const DEFAULT_UISP_TIMEZONE = 'Pacific/Easter';
+
+export function configuredTimezone(): string {
+  const configured = process.env.UISP_TIMEZONE?.trim();
+  return configured ? configured : DEFAULT_UISP_TIMEZONE;
+}
+
 export function parseUcrmDate(value: unknown): Date | null {
   if (typeof value !== 'string' || value.trim() === '') return null;
   const normalized = value.trim().replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
@@ -58,31 +72,85 @@ export function parseUcrmDate(value: unknown): Date | null {
   return new Date(ms);
 }
 
-function utcDayNumber(date: Date): number {
-  return Math.floor(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) / 86_400_000);
+/** Minutes east of UTC encoded on a CRM timestamp. `Z` is 0. */
+export function dueDateOffsetMinutes(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (/z$/i.test(trimmed)) return 0;
+  const match = trimmed.match(/([+-])(\d{2}):?(\d{2})$/);
+  if (!match) return null;
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (Number(match[2]) * 60 + Number(match[3]));
+}
+
+function dayNumber(year: number, month: number, day: number): number {
+  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000);
+}
+
+function dayInFixedOffset(date: Date, offsetMinutes: number): number {
+  const shifted = new Date(date.getTime() + offsetMinutes * 60_000);
+  return dayNumber(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
+}
+
+function dayInTimeZone(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = Number(parts.find((part) => part.type === 'year')?.value);
+  const month = Number(parts.find((part) => part.type === 'month')?.value);
+  const day = Number(parts.find((part) => part.type === 'day')?.value);
+  return dayNumber(year, month, day);
+}
+
+function calendarDay(date: Date, timeZone: string, dueDateRaw: unknown): number {
+  const useOffset = timeZone === 'dueDate' || timeZone === 'offset';
+  if (!useOffset) {
+    try {
+      return dayInTimeZone(date, timeZone);
+    } catch {
+      // Invalid IANA name: fall back to the offset carried on the dueDate.
+    }
+  }
+  return dayInFixedOffset(date, dueDateOffsetMinutes(dueDateRaw) ?? 0);
+}
+
+/** True when the due instant is strictly before `now`. This is CRM's overdue check, not a UTC date compare. */
+export function dueInstantPassed(dueDate: unknown, now: Date = new Date()): boolean {
+  const due = parseUcrmDate(dueDate);
+  if (!due) return false;
+  return due.getTime() < now.getTime();
 }
 
 /**
- * Whole UTC calendar days past the due date. Zero when the due date is
- * today or in the future, or when the value does not parse. Status is not
- * consulted here — callers decide whether a status can be overdue.
+ * Whole calendar days from the due date to `now` in `timeZone`.
+ * Zero on the due date itself (even after the due time) and when the due
+ * instant is still in the future. `timeZone` defaults to `UISP_TIMEZONE`.
  */
-export function daysPastDue(dueDate: unknown, now: Date = new Date()): number {
+export function daysPastDue(dueDate: unknown, now: Date = new Date(), timeZone: string = configuredTimezone()): number {
   const due = parseUcrmDate(dueDate);
   if (!due) return 0;
-  const days = utcDayNumber(now) - utcDayNumber(due);
+  const days = calendarDay(now, timeZone, dueDate) - calendarDay(due, timeZone, dueDate);
   return days > 0 ? days : 0;
 }
 
 export function invoiceIsOverdue(status: unknown, dueDate: unknown, amountToPay: unknown, now: Date = new Date()): boolean {
   if (typeof status !== 'number' || !OPEN_INVOICE_STATUSES.has(status)) return false;
   if (typeof amountToPay === 'number' && Number.isFinite(amountToPay) && amountToPay <= 0) return false;
-  return daysPastDue(dueDate, now) > 0;
+  return dueInstantPassed(dueDate, now);
 }
 
-export function daysOverdue(status: unknown, dueDate: unknown, amountToPay: unknown, now: Date = new Date()): number {
+export function daysOverdue(
+  status: unknown,
+  dueDate: unknown,
+  amountToPay: unknown,
+  now: Date = new Date(),
+  timeZone: string = configuredTimezone()
+): number {
   if (!invoiceIsOverdue(status, dueDate, amountToPay, now)) return 0;
-  return daysPastDue(dueDate, now);
+  return daysPastDue(dueDate, now, timeZone);
 }
 
 export interface InvoiceSummary {
@@ -131,9 +199,9 @@ export function clientDisplayName(record: Record<string, unknown>): string {
   return id != null ? `Client ${id}` : 'Unknown client';
 }
 
-export function summarizeInvoice(raw: unknown, now: Date = new Date()): InvoiceSummary {
+export function summarizeInvoice(raw: unknown, now: Date = new Date(), timeZone: string = configuredTimezone()): InvoiceSummary {
   if (!isRecord(raw)) {
-    throw new Error('UISP CRM invoice response was not an object');
+    throw new Error('UISP CRM /invoices failed: response was not an object');
   }
   const status = asInt(raw.status);
   const dueDate = asString(raw.dueDate);
@@ -152,7 +220,7 @@ export function summarizeInvoice(raw: unknown, now: Date = new Date()): InvoiceS
     status,
     statusLabel: invoiceStatusLabel(status),
     overdue,
-    daysOverdue: overdue ? daysPastDue(dueDate, now) : 0,
+    daysOverdue: overdue ? daysPastDue(dueDate, now, timeZone) : 0,
     proforma: typeof raw.proforma === 'boolean' ? raw.proforma : null,
   };
 }
@@ -216,7 +284,7 @@ function contactStrings(record: Record<string, unknown>, field: 'email' | 'phone
 }
 
 export function summarizeClient(raw: unknown): ClientSummary {
-  if (!isRecord(raw)) throw new Error('UISP CRM client response was not an object');
+  if (!isRecord(raw)) throw new Error('UISP CRM /clients failed: response was not an object');
   return {
     id: asInt(raw.id),
     customId: asString(raw.userIdent),
@@ -260,7 +328,7 @@ export interface ServiceSummary {
 }
 
 export function summarizeService(raw: unknown): ServiceSummary {
-  if (!isRecord(raw)) throw new Error('UISP CRM service response was not an object');
+  if (!isRecord(raw)) throw new Error('UISP CRM /clients/services failed: response was not an object');
   const status = asInt(raw.status);
   return {
     id: asInt(raw.id),
@@ -296,7 +364,7 @@ export interface PaymentSummary {
 }
 
 export function summarizePayment(raw: unknown): PaymentSummary {
-  if (!isRecord(raw)) throw new Error('UISP CRM payment response was not an object');
+  if (!isRecord(raw)) throw new Error('UISP CRM /payments failed: response was not an object');
   const covers = Array.isArray(raw.paymentCovers) ? raw.paymentCovers.filter(isRecord) : [];
   return {
     id: asInt(raw.id),
@@ -337,7 +405,7 @@ export function pageResult<T>(items: T[], limit: number, offset: number): PageRe
 export function asCollection(body: unknown, path: string): unknown[] {
   if (Array.isArray(body)) return body;
   if (isRecord(body) && Array.isArray(body.items)) return body.items;
-  throw new Error(`UISP CRM ${path} returned an unexpected collection shape`);
+  throw new Error(`UISP CRM ${path} failed: unexpected collection`);
 }
 
 export interface DebtorSummary {
